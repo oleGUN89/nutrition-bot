@@ -61,7 +61,7 @@ def recognize_photo(image_bytes: bytes) -> str | None:
     """Распознать продукты на фото. Возвращает строку или None при ошибке."""
     try:
         parts = [
-            types.Part(inline_data=types.Blob(data=image_bytes, mime_type="image/jpeg")),
+            types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg"),
             types.Part.from_text(
                 text="Перечисли все продукты питания, которые видишь на фото. "
                      "Только список через запятую, без лишних слов. "
@@ -71,7 +71,7 @@ def recognize_photo(image_bytes: bytes) -> str | None:
         response = client.models.generate_content(model=GEMINI_MODEL, contents=parts)
         return response.text.strip()
     except Exception as e:
-        logger.error(f"Vision error: {e}")
+        logger.error(f"Vision error (type={type(e).__name__}): {e}")
         return None
 
 
