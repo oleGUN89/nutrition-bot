@@ -315,7 +315,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Составляю: {user_text.lower()}...")
 
         response = ask_gemini(f"Продукты:\n{recognized}\n\n{meal_prompt}")
-
         await update.message.reply_text(f"{user_text}\n\n{response}", reply_markup=main_keyboard())
         return
 
@@ -350,4 +349,14 @@ def main():
     app.add_handler(CommandHandler("laifhak", lifehack))
     app.add_handler(CommandHandler("perekus", snack_ideas))
     app.add_handler(CommandHandler("profil", my_profile))
-    app.add_handler(Me
+    app.add_handler(MessageHandler(filters.PHOTO, menu_got_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    logger.info("Bot started!")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    import asyncio
+    asyncio.set_event_loop(asyncio.new_event_loop())
+    main()
