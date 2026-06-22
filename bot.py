@@ -59,29 +59,29 @@ def ask_gemini(prompt: str) -> str:
 
 def ask_gemini_menu(text_products: list, image_list: list, meal_prompt: str) -> str:
     """Один запрос: фото + текст продуктов + задание на меню."""
+    # Сначала пробуем с фото
     try:
         parts = []
-        for img_bytes in image_list[:3]:  # максимум 3 фото
+        for img_bytes in image_list[:2]:  # максимум 2 фото
             parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
         products_str = ""
         if text_products:
             products_str = "Продукты (текст): " + "; ".join(text_products) + "\n"
-        if image_list:
-            photo_note = f"На фото ({min(len(image_list), 3)} шт.) также есть продукты — учти их.\n"
-            products_str += photo_note
+        products_str += f"На фото ({min(len(image_list), 2)} шт.) тоже есть продукты — распознай и учти их.\n"
 
         full_prompt = f"{SYSTEM_PROMPT}\n\n{products_str}\n{meal_prompt}"
         parts.append(types.Part.from_text(text=full_prompt))
 
         response = client.models.generate_content(model=GEMINI_MODEL, contents=parts)
+        logger.info("Menu generated with vision")
         return response.text
     except Exception as e:
-        logger.error(f"Gemini menu error ({type(e).__name__}): {e}")
-        # Fallback: text only
-        if text_products:
-            return ask_gemini(f"Продукты: {'; '.join(text_products)}\n\n{meal_prompt}")
-        return "Ошибка при составлении меню. Попробуй через минуту."
+        logger.warning(f"Vision menu failed ({type(e).__name__}), falling back to text: {e}")
+
+    # Fallback: только текст
+    products_str = "; ".join(text_products) if text_products else "продукты не указаны"
+    return ask_gemini(f"Продукты: {products_str}\n\n{meal_prompt}")
 
 
 def main_keyboard():
@@ -251,7 +251,7 @@ async def menu_got_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state not in ("waiting_products", "waiting_add_or_compose"):
         return
 
-    photo = update.message.photo[-1]
+    photo = update.message.photo[0]  # smallest size
     file = await context.bot.get_file(photo.file_id)
     image_bytes = bytes(await file.download_as_bytearray())
     context.user_data.setdefault("image_bytes_list", []).append(image_bytes)
