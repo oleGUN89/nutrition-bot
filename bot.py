@@ -57,31 +57,32 @@ def ask_gemini(prompt: str) -> str:
     return "Ошибка при обращении к AI. Попробуй через минуту."
 
 
-def ask_gemini_menu(text_products: list, image_list: list, meal_prompt: str) -> str:
-    """Один запрос: фото + текст продуктов + задание на меню."""
-    # Сначала пробуем с фото
+def recognize_products(text_products: list, image_list: list) -> str:
+    """Распознаёт продукты с фото и объединяет с текстовыми. Возвращает список строкой."""
+    if not image_list:
+        if text_products:
+            return "\n".join(f"* {p}" for p in text_products)
+        return "* продукты не указаны"
+
     try:
         parts = []
-        for img_bytes in image_list[:2]:  # максимум 2 фото
+        for img_bytes in image_list[:2]:
             parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
-        products_str = ""
+        prompt = "Определи все продукты питания на фото."
         if text_products:
-            products_str = "Продукты (текст): " + "; ".join(text_products) + "\n"
-        products_str += f"На фото ({min(len(image_list), 2)} шт.) тоже есть продукты — распознай и учти их.\n"
+            prompt += f" Также добавлены текстом: {'; '.join(text_products)}. Включи их тоже."
+        prompt += " Верни только список — каждый продукт с новой строки со звёздочкой (* продукт). Без лишних слов."
 
-        full_prompt = f"{SYSTEM_PROMPT}\n\n{products_str}\n{meal_prompt}"
-        parts.append(types.Part.from_text(text=full_prompt))
-
+        parts.append(types.Part.from_text(text=prompt))
         response = client.models.generate_content(model=GEMINI_MODEL, contents=parts)
-        logger.info("Menu generated with vision")
-        return response.text
+        logger.info("Products recognized with vision")
+        return response.text.strip()
     except Exception as e:
-        logger.warning(f"Vision menu failed ({type(e).__name__}), falling back to text: {e}")
-
-    # Fallback: только текст
-    products_str = "; ".join(text_products) if text_products else "продукты не указаны"
-    return ask_gemini(f"Продукты: {products_str}\n\n{meal_prompt}")
+        logger.warning(f"Vision recognition failed ({type(e).__name__}): {e}")
+        if text_products:
+            return "\n".join(f"* {p}" for p in text_products)
+        return "* продукты не распознаны"
 
 
 def main_keyboard():
@@ -286,8 +287,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_markup=ReplyKeyboardMarkup([["Отмена"]], resize_keyboard=True),
             )
         elif user_text == "Составить меню":
+            text_products = context.user_data.get("text_products", [])
+            image_list = context.user_data.get("image_bytes_list", [])
+
+            await update.message.reply_text("Анализирую продукты...")
+            ingredients = recognize_products(text_products, image_list)
+            context.user_data["recognized_ingredients"] = ingredients
             context.user_data["menu_state"] = "waiting_meal_type"
-            await update.message.reply_text("Что составить?", reply_markup=meal_type_keyboard())
+
+            await update.message.reply_text(
+                f"Твои ингредиенты:\n{ingredients}\n\nЧто составить?",
+                reply_markup=meal_type_keyboard(),
+            )
         else:
             await update.message.reply_text("Выбери кнопку.", reply_markup=add_or_compose_keyboard())
         return
@@ -297,18 +308,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Выбери один из вариантов.", reply_markup=meal_type_keyboard())
             return
 
-        text_products = context.user_data.get("text_products", [])
-        image_list = context.user_data.get("image_bytes_list", [])
+        recognized = context.user_data.get("recognized_ingredients", "* продукты не указаны")
         meal_prompt = MEAL_PROMPTS[user_text]
 
         context.user_data.clear()
         await update.message.reply_text(f"Составляю: {user_text.lower()}...")
 
-        if image_list:
-            response = ask_gemini_menu(text_products, image_list, meal_prompt)
-        else:
-            products_str = "; ".join(text_products) if text_products else "продукты не указаны"
-            response = ask_gemini(f"Продукты: {products_str}\n\n{meal_prompt}")
+        response = ask_gemini(f"Продукты:\n{recognized}\n\n{meal_prompt}")
 
         await update.message.reply_text(f"{user_text}\n\n{response}", reply_markup=main_keyboard())
         return
@@ -344,14 +350,4 @@ def main():
     app.add_handler(CommandHandler("laifhak", lifehack))
     app.add_handler(CommandHandler("perekus", snack_ideas))
     app.add_handler(CommandHandler("profil", my_profile))
-    app.add_handler(MessageHandler(filters.PHOTO, menu_got_photo))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
-
-    logger.info("Bot started!")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
-
-
-if __name__ == "__main__":
-    import asyncio
-    asyncio.set_event_loop(asyncio.new_event_loop())
-    main()
+    app.add_handler(Me
