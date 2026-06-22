@@ -24,6 +24,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 GEMINI_MODEL = "gemini-2.5-flash"
+FALLBACK_MODEL = "gemini-1.5-flash"
 
 SYSTEM_PROMPT = """Ты персональный нутрициолог и диетолог по имени Нутри.
 Профиль пользователя:
@@ -46,15 +47,14 @@ SYSTEM_PROMPT = """Ты персональный нутрициолог и ди�
 
 
 def ask_gemini(prompt: str) -> str:
-    try:
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=f"{SYSTEM_PROMPT}\n\n{prompt}",
-        )
-        return response.text
-    except Exception as e:
-        logger.error(f"Gemini text error ({type(e).__name__}): {e}")
-        return "Ошибка при обращении к AI. Попробуй через минуту."
+    full = f"{SYSTEM_PROMPT}\n\n{prompt}"
+    for model in [GEMINI_MODEL, FALLBACK_MODEL]:
+        try:
+            response = client.models.generate_content(model=model, contents=full)
+            return response.text
+        except Exception as e:
+            logger.warning(f"Model {model} failed ({type(e).__name__}): {e}")
+    return "Ошибка при обращении к AI. Попробуй через минуту."
 
 
 def ask_gemini_menu(text_products: list, image_list: list, meal_prompt: str) -> str:
