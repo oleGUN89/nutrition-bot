@@ -163,8 +163,7 @@ def format_ingredients_for_menu(result: AnalysisResult) -> str:
 
 def main_keyboard():
     return ReplyKeyboardMarkup([
-        [KeyboardButton("Совет на день"), KeyboardButton("Меню из продуктов")],
-        [KeyboardButton("Напоминания 💧"), KeyboardButton("Лайфхак")],
+        [KeyboardButton("Меню из продуктов"), KeyboardButton("Напоминания 💧")],
         [KeyboardButton("Идеи для перекуса"), KeyboardButton("Мой профиль")],
     ], resize_keyboard=True)
 
@@ -450,12 +449,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if user_text == "Меню из продуктов":
         await menu_start(update, context)
-    elif user_text == "Совет на день":
-        await daily_tip(update, context)
     elif user_text in ("Напоминания 💧", "Водный баланс"):
         await toggle_water(update, context)
-    elif user_text == "Лайфхак":
-        await lifehack(update, context)
     elif user_text == "Идеи для перекуса":
         await snack_ideas(update, context)
     elif user_text == "Мой профиль":
@@ -475,8 +470,6 @@ def main():
         app.job_queue.run_daily(water_reminder_job, time=t, data=msg)
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("sovet", daily_tip))
-    app.add_handler(CommandHandler("laifhak", lifehack))
     app.add_handler(CommandHandler("perekus", snack_ideas))
     app.add_handler(CommandHandler("profil", my_profile))
     app.add_handler(CommandHandler("voda", toggle_water))
