@@ -43,57 +43,31 @@ class RecognizedProduct(BaseModel):
 class AnalysisResult(BaseModel):
     products: list[RecognizedProduct]
 
-CATEGORY_EMOJI = {
-    "белки": "🥩",
-    "жиры": "🥑",
-    "углеводы": "🌾",
-    "овощи-зелень": "🥦",
-    "молочное": "🥛",
-    "прочее": "🍽",
-}
+# --- Сокращённый system prompt ---
 
-SYSTEM_PROMPT = """Ты персональный нутрициолог и диетолог по имени Нутри.
-Профиль пользователя:
-- Пол: мужчина, возраст 30-45 лет
-- Главная цель: похудение
-- Образ жизни: сидячий (офис/удалёнка)
-- Пищевых ограничений нет
-- Суточная норма воды: 2.0-2.2 литра
-- Рекомендуемый дефицит калорий: 300-500 ккал от нормы
+SYSTEM_PROMPT = """Нутрициолог Нутри. Цель пользователя: похудение, мужчина 30-45 лет, сидячий образ жизни, дефицит 300-500 ккал.
+Правила: белок в каждом приёме (25-30г), медленные углеводы, без сахара, практичные советы.
+Язык: русский. Стиль: коротко, без приветствий и вводных фраз, сразу к сути.
 
-Принципы:
-1. Никакого голодания - только разумный дефицит
-2. Белок в каждом приёме пищи (минимум 25-30 г)
-3. Медленные углеводы, минимум сахара
-4. Советы практичные, без сложных рецептов
-5. Отвечай на русском языке
-6. Стиль: без лишних слов - только суть
-7. Никаких вступлений, приветствий, вводных фраз
-8. Сразу к сути
-
-ФОРМАТИРОВАНИЕ — строго соблюдай этот шаблон для каждого блюда:
-
-<b>Название блюда</b> (~NNN ккал)
+Формат блюда:
+<b>Название</b> (~NNN ккал)
 
 <b>Ингредиенты</b>
-• Ингредиент 1 — количество
-• Ингредиент 2 — количество
+• ингредиент — количество
 
 <b>Приготовление</b>
-1. <b>Шаг:</b> описание действия.
-2. <b>Шаг:</b> описание действия.
-3. <b>Шаг:</b> описание действия.
+1. <b>Шаг:</b> действие.
+2. <b>Шаг:</b> действие.
 
-Между блюдами — пустая строка-разделитель.
-Никаких символов * и **. Только HTML-теги <b> и <i>.
-Для секции Докупить используй: <b>Докупить</b> и список через •"""
+Между блюдами пустая строка. Только теги <b> и <i>, никаких * и **.
+Секция закупок: <b>Докупить</b> + список через •"""
 
 
-def ask_gemini(prompt: str) -> str:
+async def ask_gemini(prompt: str) -> str:
     full = f"{SYSTEM_PROMPT}\n\n{prompt}"
     for model in [GEMINI_MODEL, FALLBACK_MODEL, FALLBACK_MODEL_2]:
         try:
-            response = client.models.generate_content(model=model, contents=full)
+            response = await client.aio.models.generate_content(model=model, contents=full)
             return response.text
         except Exception as e:
             logger.warning(f"Model {model} failed ({type(e).__name__}): {e}")
@@ -101,143 +75,99 @@ def ask_gemini(prompt: str) -> str:
 
 
 def _parse_json_response(text: str) -> AnalysisResult | None:
-    """Парсит JSON из ответа Gemini, убирая markdown-обёртки."""
     try:
         text = text.strip()
-        # убрать ```json ... ``` если есть
         if "```" in text:
-            parts = text.split("```")
-            for part in parts:
-                part = part.strip()
-                if part.startswith("json"):
-                    part = part[4:].strip()
+            for part in text.split("```"):
+                part = part.strip().lstrip("json").strip()
                 try:
                     return AnalysisResult.model_validate_json(part)
                 except Exception:
                     continue
         return AnalysisResult.model_validate_json(text)
     except Exception as e:
-        logger.warning(f"JSON parse error: {e}\nText was: {text[:300]}")
+        logger.warning(f"JSON parse error: {e}\nText: {text[:300]}")
         return None
 
 
-def recognize_products_structured(text_products: list, image_list: list) -> AnalysisResult | None:
-    """Распознаёт продукты и КБЖУ. Использует Vision если есть фото."""
-    JSON_SCHEMA = '''{
-  "products": [
-    {
-      "name": "название продукта на русском",
-      "amount": "примерное количество (200г / 3 шт / пол-пачки)",
-      "category": "белки | жиры | углеводы | овощи-зелень | молочное | прочее",
-      "calories_per_100g": 000,
-      "protein_per_100g": 0.0,
-      "fat_per_100g": 0.0,
-      "carbs_per_100g": 0.0
-    }
-  ]
-}'''
-
+async def recognize_products_structured(text_products: list, image_list: list) -> AnalysisResult | None:
+    JSON_SCHEMA = ('{"products":[{"name":"название","amount":"количество",'
+                   '"category":"белки|жиры|углеводы|овощи-зелень|молочное|прочее",'
+                   '"calories_per_100g":0,"protein_per_100g":0.0,'
+                   '"fat_per_100g":0.0,"carbs_per_100g":0.0}]}')
     try:
         parts = []
         for img_bytes in image_list[:5]:
             parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
+        prompt = "Определи продукты питания"
         if image_list:
-            prompt = "Определи все продукты питания на фото."
-        else:
-            prompt = "Определи продукты питания."
-
+            prompt += " на фото"
         if text_products:
-            prompt += f" Также добавлены текстом: {'; '.join(text_products)}."
-
-        prompt += (
-            f"\n\nДля каждого продукта укажи КБЖУ на 100г и примерное количество."
-            f"\nВерни ТОЛЬКО валидный JSON без markdown и без пояснений:\n{JSON_SCHEMA}"
-        )
+            prompt += f". Текстом: {'; '.join(text_products)}"
+        prompt += f". Верни ТОЛЬКО валидный JSON без markdown:\n{JSON_SCHEMA}"
 
         parts.append(types.Part.from_text(text=prompt))
 
         for model in [GEMINI_MODEL, FALLBACK_MODEL, FALLBACK_MODEL_2]:
             try:
-                response = client.models.generate_content(model=model, contents=parts)
-                logger.info(f"Raw recognition response ({model}): {response.text[:200]}")
+                response = await client.aio.models.generate_content(model=model, contents=parts)
+                logger.info(f"Recognition raw ({model}): {response.text[:150]}")
                 result = _parse_json_response(response.text)
                 if result and result.products:
-                    logger.info(f"Structured recognition OK: {len(result.products)} products")
                     return result
             except Exception as e:
                 logger.warning(f"Recognition model {model} failed: {type(e).__name__}: {e}")
-
         return None
     except Exception as e:
-        logger.warning(f"recognize_products_structured outer error: {e}")
+        logger.warning(f"recognize_products_structured error: {e}")
         return None
 
 
 def format_ingredients_display(result: AnalysisResult) -> str:
-    lines = [f"• {p.name}" for p in result.products]
-    return "\n".join(lines)
+    return "\n".join(f"• {p.name}" for p in result.products)
 
 
 def format_ingredients_for_menu(result: AnalysisResult) -> str:
-    lines = []
-    for p in result.products:
-        lines.append(
-            f"- {p.name} ({p.amount}): {p.calories_per_100g} ккал/100г, "
-            f"белки {p.protein_per_100g}г, жиры {p.fat_per_100g}г, углеводы {p.carbs_per_100g}г"
-        )
-    return "\n".join(lines)
+    return "\n".join(
+        f"- {p.name} ({p.amount}): {p.calories_per_100g} ккал/100г, "
+        f"Б{p.protein_per_100g}г Ж{p.fat_per_100g}г У{p.carbs_per_100g}г"
+        for p in result.products
+    )
 
 
 def main_keyboard():
-    keyboard = [
+    return ReplyKeyboardMarkup([
         [KeyboardButton("Совет на день"), KeyboardButton("Меню из продуктов")],
         [KeyboardButton("Водный баланс"), KeyboardButton("Лайфхак")],
         [KeyboardButton("Идеи для перекуса"), KeyboardButton("Мой профиль")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    ], resize_keyboard=True)
 
 
 def add_or_compose_keyboard():
-    keyboard = [
+    return ReplyKeyboardMarkup([
         [KeyboardButton("Добавить продукты"), KeyboardButton("Составить меню")],
         [KeyboardButton("Отмена")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    ], resize_keyboard=True)
 
 
 def meal_type_keyboard():
-    keyboard = [
+    return ReplyKeyboardMarkup([
         [KeyboardButton("На весь день"), KeyboardButton("Завтрак")],
         [KeyboardButton("Обед"), KeyboardButton("Ужин"), KeyboardButton("Перекус")],
         [KeyboardButton("Отмена")],
-    ]
-    return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    ], resize_keyboard=True)
 
 
 MEAL_PROMPTS = {
     "На весь день": (
-        "Составь план питания на весь день: завтрак (~400 ккал), обед (~550 ккал), "
-        "ужин (~380 ккал), перекус (~180 ккал).\n"
-        "Для каждого блюда используй шаблон из системного промпта.\n"
-        "В конце добавь секцию: <b>Докупить</b> — 5-7 позиций через •"
+        "Составь план на день: завтрак (~400 ккал), обед (~550 ккал), ужин (~380 ккал), перекус (~180 ккал). "
+        "Используй шаблон. В конце: <b>Докупить</b> — 5-7 позиций через •"
     ),
-    "Завтрак": (
-        "Составь 2 варианта завтрака (~400 ккал каждый). "
-        "Для каждого используй шаблон из системного промпта."
-    ),
-    "Обед": (
-        "Составь 2 варианта обеда (~550 ккал каждый). "
-        "Для каждого используй шаблон из системного промпта."
-    ),
-    "Ужин": (
-        "Составь 2 варианта ужина (~380 ккал каждый, лёгкие). "
-        "Для каждого используй шаблон из системного промпта."
-    ),
-    "Перекус": (
-        "Предложи 3 варианта перекуса (~180 ккал каждый, высокий белок). "
-        "Для каждого используй шаблон из системного промпта (без шагов приготовления, только ингредиенты)."
-    ),
+    "Завтрак": "Составь 2 варианта завтрака (~400 ккал). Используй шаблон.",
+    "Обед": "Составь 2 варианта обеда (~550 ккал). Используй шаблон.",
+    "Ужин": "Составь 2 варианта ужина (~380 ккал, лёгкие). Используй шаблон.",
+    "Перекус": "Предложи 3 варианта перекуса (~180 ккал, высокий белок). Используй шаблон (без шагов).",
 }
 
 
@@ -245,17 +175,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     name = update.effective_user.first_name or "друг"
     await update.message.reply_text(
-        f"Привет, {name}!\n\nЯ Нутри — твой личный нутрициолог.\n"
-        "Цель: похудение. Образ жизни: сидячий. Ограничений нет.\n\nВыбирай:",
+        f"Привет, {name}! Я Нутри — твой нутрициолог.\nЦель: похудение. Выбирай:",
         reply_markup=main_keyboard(),
     )
 
 
 async def daily_tip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    day = datetime.now().strftime("%A, %d %B")
     await update.message.reply_text("Готовлю совет...")
-    response = ask_gemini(
+    day = datetime.now().strftime("%A, %d %B")
+    response = await ask_gemini(
         f"Сегодня {day}. Один практичный совет по питанию для похудения. "
         f"Формат: <b>заголовок</b> + 2-3 предложения + мотивирующая фраза."
     )
@@ -267,11 +196,9 @@ async def daily_tip(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def water_tip(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    hour = datetime.now().hour
     await update.message.reply_text("Считаю водный баланс...")
-    response = ask_gemini(
-        f"Сейчас {hour}:00. Короткий совет по водному балансу. "
-        f"Норма воды, как распределить по дню, 1-2 лайфхака."
+    response = await ask_gemini(
+        f"Сейчас {datetime.now().hour}:00. Совет по водному балансу: норма, распределение по дню, 1-2 лайфхака."
     )
     await update.message.reply_text(
         f"<b>Водный баланс</b>\n\n{response}",
@@ -283,20 +210,19 @@ async def lifehack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     topics = [
         "скорость поглощения пищи и насыщение",
-        "правильные перекусы при сидячей работе",
+        "перекусы при сидячей работе",
         "как не переедать вечером",
-        "замена вредных продуктов полезными аналогами",
-        "питание для поддержания энергии в течение дня",
-        "как читать состав продуктов в магазине",
+        "замена вредных продуктов полезными",
+        "питание для энергии в течение дня",
+        "как читать состав продуктов",
         "белковые завтраки для похудения",
         "интервальное питание",
         "как уменьшить тягу к сладкому",
-        "приготовление еды заранее (meal prep)",
+        "meal prep — готовка еды заранее",
     ]
-    topic = random.choice(topics)
     await update.message.reply_text("Ищу лайфхак...")
-    response = ask_gemini(
-        f"Один лайфхак на тему: '{topic}'. "
+    response = await ask_gemini(
+        f"Лайфхак на тему: '{random.choice(topics)}'. "
         f"Формат: <b>название</b> + 2-3 предложения + как применить сегодня."
     )
     await update.message.reply_text(
@@ -308,9 +234,8 @@ async def lifehack(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def snack_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("Подбираю перекусы...")
-    response = ask_gemini(
-        "3 перекуса для похудения при сидячей работе. "
-        "До 5 минут готовки, высокий белок, до 200 ккал. "
+    response = await ask_gemini(
+        "3 перекуса для похудения при сидячей работе. До 5 мин готовки, высокий белок, до 200 ккал. "
         "Для каждого: <b>название</b> (~ккал), ингредиенты через •, почему подходит."
     )
     await update.message.reply_text(
@@ -347,10 +272,9 @@ async def show_add_or_compose(update: Update, context: ContextTypes.DEFAULT_TYPE
     texts = context.user_data.get("text_products", [])
     photos = context.user_data.get("image_bytes_list", [])
     lines = [f"• {p}" for p in texts] + [f"📷 фото #{i+1}" for i in range(len(photos))]
-    product_list = "\n".join(lines) if lines else "• пусто"
     context.user_data["menu_state"] = "waiting_add_or_compose"
     await update.message.reply_text(
-        f"<b>Добавлено:</b>\n{product_list}\n\nЧто дальше?",
+        f"<b>Добавлено:</b>\n{chr(10).join(lines) if lines else '• пусто'}\n\nЧто дальше?",
         reply_markup=add_or_compose_keyboard(), parse_mode='HTML',
     )
 
@@ -359,7 +283,6 @@ async def menu_got_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state = context.user_data.get("menu_state")
     if state not in ("waiting_products", "waiting_add_or_compose"):
         return
-    # Берём среднее по размеру фото (индекс 1 если есть, иначе последнее)
     photo_sizes = update.message.photo
     photo = photo_sizes[min(1, len(photo_sizes) - 1)]
     file = await context.bot.get_file(photo.file_id)
@@ -397,26 +320,21 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             image_list = context.user_data.get("image_bytes_list", [])
 
             await update.message.reply_text("Анализирую продукты...")
-
-            result = recognize_products_structured(text_products, image_list)
+            result = await recognize_products_structured(text_products, image_list)
 
             if result and result.products:
                 display = format_ingredients_display(result)
                 menu_str = format_ingredients_for_menu(result)
                 context.user_data["recognized_ingredients"] = menu_str
-                context.user_data["menu_state"] = "waiting_meal_type"
-                await update.message.reply_text(
-                    f"<b>Твои ингредиенты:</b>\n\n{display}\n\nЧто составить?",
-                    reply_markup=meal_type_keyboard(), parse_mode='HTML',
-                )
             else:
-                fallback = "\n".join(f"• {p}" for p in text_products) if text_products else "• продукты не указаны"
-                context.user_data["recognized_ingredients"] = fallback
-                context.user_data["menu_state"] = "waiting_meal_type"
-                await update.message.reply_text(
-                    f"<b>Продукты:</b>\n{fallback}\n\nЧто составить?",
-                    reply_markup=meal_type_keyboard(), parse_mode='HTML',
-                )
+                display = "\n".join(f"• {p}" for p in text_products) if text_products else "• не указаны"
+                context.user_data["recognized_ingredients"] = display
+
+            context.user_data["menu_state"] = "waiting_meal_type"
+            await update.message.reply_text(
+                f"<b>Продукты:</b>\n{display}\n\nЧто составить?",
+                reply_markup=meal_type_keyboard(), parse_mode='HTML',
+            )
         else:
             await update.message.reply_text("Выбери кнопку.", reply_markup=add_or_compose_keyboard())
         return
@@ -425,17 +343,13 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_text not in MEAL_PROMPTS:
             await update.message.reply_text("Выбери один из вариантов.", reply_markup=meal_type_keyboard())
             return
-        recognized = context.user_data.get("recognized_ingredients", "продукты не указаны")
+        recognized = context.user_data.get("recognized_ingredients", "не указаны")
         meal_prompt = MEAL_PROMPTS[user_text]
         context.user_data.clear()
         await update.message.reply_text(f"Составляю: {user_text.lower()}...")
-        response = ask_gemini(
-            f"Имеющиеся продукты (с КБЖУ):\n{recognized}\n\n"
-            f"Правила:\n"
-            f"- Используй имеющиеся продукты там, где они уместны — не обязательно все и не обязательно каждый в отдельное блюдо\n"
-            f"- Дополняй блюда другими ингредиентами для полноценного питания\n"
-            f"- В конце каждого варианта меню добавь список того, что нужно докупить\n"
-            f"- Используй точные данные КБЖУ для расчёта калорийности\n\n{meal_prompt}"
+        response = await ask_gemini(
+            f"Имеющиеся продукты (КБЖУ):\n{recognized}\n\n"
+            f"Используй уместно, дополняй другими. В конце — что докупить.\n\n{meal_prompt}"
         )
         await update.message.reply_text(
             f"<b>{user_text}</b>\n\n{response}",
@@ -457,9 +371,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await my_profile(update, context)
     else:
         await update.message.reply_text("Думаю...")
-        response = ask_gemini(
-            f"Пользователь пишет: '{user_text}'\n\n"
-            f"Ответь как нутрициолог. Если вопрос не о питании — мягко верни к теме."
+        response = await ask_gemini(
+            f"Пользователь: '{user_text}'. Ответь как нутрициолог. Если не о питании — мягко верни к теме."
         )
         await update.message.reply_text(response, reply_markup=main_keyboard(), parse_mode='HTML')
 
