@@ -27,6 +27,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 client = genai.Client(api_key=GEMINI_API_KEY)
 GEMINI_MODEL = "gemini-3.5-flash"
 FALLBACK_MODEL = "gemini-2.5-flash"
+FALLBACK_MODEL_2 = "gemini-2.0-flash"
 
 # --- Pydantic-схема ---
 
@@ -90,7 +91,7 @@ SYSTEM_PROMPT = """Ты персональный нутрициолог и ди�
 
 def ask_gemini(prompt: str) -> str:
     full = f"{SYSTEM_PROMPT}\n\n{prompt}"
-    for model in [GEMINI_MODEL, FALLBACK_MODEL]:
+    for model in [GEMINI_MODEL, FALLBACK_MODEL, FALLBACK_MODEL_2]:
         try:
             response = client.models.generate_content(model=model, contents=full)
             return response.text
@@ -156,7 +157,7 @@ def recognize_products_structured(text_products: list, image_list: list) -> Anal
 
         parts.append(types.Part.from_text(text=prompt))
 
-        for model in [GEMINI_MODEL, FALLBACK_MODEL]:
+        for model in [GEMINI_MODEL, FALLBACK_MODEL, FALLBACK_MODEL_2]:
             try:
                 response = client.models.generate_content(model=model, contents=parts)
                 logger.info(f"Raw recognition response ({model}): {response.text[:200]}")
