@@ -26,9 +26,9 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
 client = genai.Client(api_key=GEMINI_API_KEY)
-GEMINI_MODEL = "gemini-3.5-flash"
-FALLBACK_MODEL = "gemini-2.5-flash"
-FALLBACK_MODEL_2 = "gemini-2.0-flash"
+GEMINI_MODEL = "gemini-2.5-flash"
+FALLBACK_MODEL = "gemini-2.0-flash"
+FALLBACK_MODEL_2 = "gemini-1.5-flash"
 
 water_enabled: set[int] = set()
 DB_POOL = None
