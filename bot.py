@@ -28,7 +28,7 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 client = genai.Client(api_key=GEMINI_API_KEY)
 GEMINI_MODEL = "gemini-2.5-flash"
 FALLBACK_MODEL = "gemini-2.0-flash"
-FALLBACK_MODEL_2 = "gemini-1.5-flash"
+FALLBACK_MODEL_2 = "gemini-2.0-flash-lite"
 
 water_enabled: set[int] = set()
 DB_POOL = None
@@ -197,11 +197,17 @@ async def get_today_log(chat_id: int) -> list:
 async def ask_gemini(prompt: str) -> str:
     full = f"{SYSTEM_PROMPT}\n\n{prompt}"
     for model in [GEMINI_MODEL, FALLBACK_MODEL, FALLBACK_MODEL_2]:
-        try:
-            response = await client.aio.models.generate_content(model=model, contents=full)
-            return response.text
-        except Exception as e:
-            logger.warning(f"Model {model} failed ({type(e).__name__}): {e}")
+        for attempt in range(2):
+            try:
+                response = await client.aio.models.generate_content(model=model, contents=full)
+                return response.text
+            except Exception as e:
+                err_str = str(e)
+                logger.warning(f"Model {model} attempt {attempt+1} failed ({type(e).__name__}): {e}")
+                if "503" in err_str and attempt == 0:
+                    await asyncio.sleep(3)
+                    continue
+                break
     return "Ошибка при обращении к AI. Попробуй через минуту."
 
 def _parse_json_response(text: str) -> AnalysisResult | None:
