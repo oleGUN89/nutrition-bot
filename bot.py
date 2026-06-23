@@ -1,7 +1,9 @@
 import logging
 import os
 import random
+import json
 from datetime import datetime
+from pydantic import BaseModel
 from google import genai
 from google.genai import types
 from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
@@ -25,6 +27,31 @@ GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 client = genai.Client(api_key=GEMINI_API_KEY)
 GEMINI_MODEL = "gemini-3.5-flash"
 FALLBACK_MODEL = "gemini-2.5-flash"
+
+# --- Pydantic-схема для JSON Mode ---
+
+class RecognizedProduct(BaseModel):
+    name: str
+    amount: str
+    category: str
+    calories_per_100g: int
+    protein_per_100g: float
+    fat_per_100g: float
+    carbs_per_100g: float
+
+class AnalysisResult(BaseModel):
+    products: list[RecognizedProduct]
+
+# ---
+
+CATEGORY_EMOJI = {
+    "белки": "🥩",
+    "жиры": "🥑",
+    "углеводы": "🌾",
+    "овощи-зелень": "🥦",
+    "молочное": "🥛",
+    "прочее": "🍽",
+}
 
 SYSTEM_PROMPT = """Ты персональный нутрициолог и диетолог по имени Нутри.
 Профиль пользователя:
@@ -74,31 +101,75 @@ def ask_gemini(prompt: str) -> str:
     return "Ошибка при обращении к AI. Попробуй через минуту."
 
 
-def recognize_products(text_products: list, image_list: list) -> str:
-    if not image_list:
-        if text_products:
-            return "\n".join(f"• {p}" for p in text_products)
-        return "• продукты не указаны"
-
+def recognize_products_structured(text_products: list, image_list: list) -> AnalysisResult | None:
+    """JSON Mode: распознаёт продукты и возвращает КБЖУ через Pydantic-схему."""
     try:
         parts = []
-        for img_bytes in image_list[:2]:
+        for img_bytes in image_list[:3]:
             parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
-        prompt = "Определи все продукты питания на фото."
+        prompt = "Определи все продукты питания"
+        if image_list:
+            prompt += " на фото"
         if text_products:
-            prompt += f" Также добавлены текстом: {'; '.join(text_products)}. Включи их тоже."
-        prompt += " Верни только список — каждый продукт с новой строки, начиная с символа •. Без лишних слов."
+            prompt += f". Также добавлены текстом: {'; '.join(text_products)}"
+        prompt += (
+            ". Для каждого продукта укажи:\n"
+            "- name: название на русском\n"
+            "- amount: примерное количество (200г, 3 шт, пол-пачки и т.д.)\n"
+            "- category: одно из — белки / жиры / углеводы / овощи-зелень / молочное / прочее\n"
+            "- calories_per_100g: ккал на 100г (целое число)\n"
+            "- protein_per_100g: белки г/100г\n"
+            "- fat_per_100g: жиры г/100г\n"
+            "- carbs_per_100g: углеводы г/100г"
+        )
 
         parts.append(types.Part.from_text(text=prompt))
-        response = client.models.generate_content(model=GEMINI_MODEL, contents=parts)
-        logger.info("Products recognized with vision")
-        return response.text.strip()
+
+        for model in [GEMINI_MODEL, FALLBACK_MODEL]:
+            try:
+                response = client.models.generate_content(
+                    model=model,
+                    contents=parts,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=AnalysisResult,
+                    ),
+                )
+                result = AnalysisResult.model_validate_json(response.text)
+                logger.info(f"Structured recognition OK via {model}: {len(result.products)} products")
+                return result
+            except Exception as e:
+                logger.warning(f"Structured recognition failed ({model}): {e}")
+
+        return None
     except Exception as e:
-        logger.warning(f"Vision recognition failed ({type(e).__name__}): {e}")
-        if text_products:
-            return "\n".join(f"• {p}" for p in text_products)
-        return "• продукты не распознаны"
+        logger.warning(f"recognize_products_structured error: {e}")
+        return None
+
+
+def format_ingredients_display(result: AnalysisResult) -> str:
+    """Красивый HTML-список продуктов с КБЖУ для показа пользователю."""
+    lines = []
+    for p in result.products:
+        emoji = CATEGORY_EMOJI.get(p.category, "🍽")
+        lines.append(
+            f"{emoji} <b>{p.name}</b> — {p.amount}\n"
+            f"    {p.calories_per_100g} ккал/100г  |  "
+            f"Б: {p.protein_per_100g}г  Ж: {p.fat_per_100g}г  У: {p.carbs_per_100g}г"
+        )
+    return "\n\n".join(lines)
+
+
+def format_ingredients_for_menu(result: AnalysisResult) -> str:
+    """Компактная строка для передачи в промпт генерации меню."""
+    lines = []
+    for p in result.products:
+        lines.append(
+            f"- {p.name} ({p.amount}): {p.calories_per_100g} ккал/100г, "
+            f"белки {p.protein_per_100g}г, жиры {p.fat_per_100g}г, углеводы {p.carbs_per_100g}г"
+        )
+    return "\n".join(lines)
 
 
 def main_keyboard():
@@ -269,12 +340,10 @@ async def show_add_or_compose(update: Update, context: ContextTypes.DEFAULT_TYPE
     photos = context.user_data.get("image_bytes_list", [])
 
     lines = []
-    if texts:
-        for p in texts:
-            lines.append(f"• {p}")
-    if photos:
-        for i in range(len(photos)):
-            lines.append(f"📷 фото #{i + 1}")
+    for p in texts:
+        lines.append(f"• {p}")
+    for i in range(len(photos)):
+        lines.append(f"📷 фото #{i + 1}")
 
     product_list = "\n".join(lines) if lines else "• пусто"
     context.user_data["menu_state"] = "waiting_add_or_compose"
@@ -291,7 +360,7 @@ async def menu_got_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if state not in ("waiting_products", "waiting_add_or_compose"):
         return
 
-    photo = update.message.photo[0]
+    photo = update.message.photo[-1]  # наибольшее разрешение
     file = await context.bot.get_file(photo.file_id)
     image_bytes = bytes(await file.download_as_bytearray())
     context.user_data.setdefault("image_bytes_list", []).append(image_bytes)
@@ -312,7 +381,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if menu_state == "waiting_products":
-        # Разбиваем по строкам — каждая строка отдельный продукт
         new_items = [line.strip() for line in user_text.splitlines() if line.strip()]
         context.user_data.setdefault("text_products", []).extend(new_items)
         context.user_data.setdefault("image_bytes_list", [])
@@ -330,16 +398,31 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text_products = context.user_data.get("text_products", [])
             image_list = context.user_data.get("image_bytes_list", [])
 
-            await update.message.reply_text("Анализирую продукты...")
-            ingredients = recognize_products(text_products, image_list)
-            context.user_data["recognized_ingredients"] = ingredients
-            context.user_data["menu_state"] = "waiting_meal_type"
+            await update.message.reply_text("🔍 Анализирую продукты и считаю КБЖУ...")
 
-            await update.message.reply_text(
-                f"<b>Твои ингредиенты:</b>\n{ingredients}\n\nЧто составить?",
-                reply_markup=meal_type_keyboard(),
-                parse_mode='HTML',
-            )
+            result = recognize_products_structured(text_products, image_list)
+
+            if result and result.products:
+                display = format_ingredients_display(result)
+                menu_str = format_ingredients_for_menu(result)
+                context.user_data["recognized_ingredients"] = menu_str
+                context.user_data["menu_state"] = "waiting_meal_type"
+
+                await update.message.reply_text(
+                    f"<b>Твои ингредиенты:</b>\n\n{display}\n\nЧто составить?",
+                    reply_markup=meal_type_keyboard(),
+                    parse_mode='HTML',
+                )
+            else:
+                # Fallback: показываем текстовый список
+                fallback = "\n".join(f"• {p}" for p in text_products) if text_products else "• продукты не указаны"
+                context.user_data["recognized_ingredients"] = fallback
+                context.user_data["menu_state"] = "waiting_meal_type"
+                await update.message.reply_text(
+                    f"<b>Продукты:</b>\n{fallback}\n\nЧто составить?",
+                    reply_markup=meal_type_keyboard(),
+                    parse_mode='HTML',
+                )
         else:
             await update.message.reply_text("Выбери кнопку.", reply_markup=add_or_compose_keyboard())
         return
@@ -349,13 +432,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Выбери один из вариантов.", reply_markup=meal_type_keyboard())
             return
 
-        recognized = context.user_data.get("recognized_ingredients", "• продукты не указаны")
+        recognized = context.user_data.get("recognized_ingredients", "продукты не указаны")
         meal_prompt = MEAL_PROMPTS[user_text]
 
         context.user_data.clear()
         await update.message.reply_text(f"Составляю: {user_text.lower()}...")
 
-        response = ask_gemini(f"Продукты:\n{recognized}\n\n{meal_prompt}")
+        response = ask_gemini(
+            f"Продукты с КБЖУ:\n{recognized}\n\n"
+            f"Используй точные данные по КБЖУ при расчёте калорийности блюд.\n\n{meal_prompt}"
+        )
         await update.message.reply_text(
             f"<b>{user_text}</b>\n\n{response}",
             reply_markup=main_keyboard(),
