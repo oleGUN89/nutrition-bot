@@ -641,14 +641,18 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif user_text == "Составить меню":
             text_products = context.user_data.get("text_products", [])
             image_list = context.user_data.get("image_bytes_list", [])
-            await update.message.reply_text("Анализирую продукты...")
-            result = await recognize_products_structured(text_products, image_list)
-            if result and result.products:
-                display = format_ingredients_display(result)
-                context.user_data["recognized_ingredients"] = format_ingredients_for_menu(result)
+            if image_list:
+                await update.message.reply_text("Анализирую продукты...")
+                result = await recognize_products_structured(text_products, image_list)
+                if result and result.products:
+                    display = format_ingredients_display(result)
+                    context.user_data["recognized_ingredients"] = format_ingredients_for_menu(result)
+                else:
+                    display = "\n".join(f"• {p}" for p in text_products) if text_products else "• не указаны"
+                    context.user_data["recognized_ingredients"] = display
             else:
                 display = "\n".join(f"• {p}" for p in text_products) if text_products else "• не указаны"
-                context.user_data["recognized_ingredients"] = display
+                context.user_data["recognized_ingredients"] = ", ".join(text_products) if text_products else "не указаны"
             context.user_data["menu_state"] = "waiting_meal_type"
             await update.message.reply_text(
                 f"<b>Продукты:</b>\n{display}\n\nЧто составить?",
