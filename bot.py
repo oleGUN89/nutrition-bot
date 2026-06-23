@@ -294,6 +294,17 @@ def build_eat_keyboard(dishes: list, eaten_ids: set) -> InlineKeyboardMarkup:
         buttons.append([InlineKeyboardButton(text, callback_data=f"eat:{d['id']}")])
     return InlineKeyboardMarkup(buttons)
 
+def build_snack_keyboard(dishes: list, eaten_ids: set) -> InlineKeyboardMarkup:
+    buttons = []
+    for d in dishes:
+        if d["id"] in eaten_ids:
+            text = f"✅ {d['dish_name']}"
+        else:
+            text = f"◻️ Съел  —  {d['dish_name']} (~{d.get('calories', 0)} ккал)"
+        buttons.append([InlineKeyboardButton(text, callback_data=f"eat:{d['id']}")])
+    buttons.append([InlineKeyboardButton("🔄 Предложить ещё", callback_data="snack_more")])
+    return InlineKeyboardMarkup(buttons)
+
 def build_food_keyboard(dishes: list, selected_ids: set) -> InlineKeyboardMarkup:
     buttons = []
     for d in dishes:
@@ -369,14 +380,21 @@ async def eat_dish_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def snack_more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
+    chat_id = update.effective_chat.id
     shown = context.user_data.get("shown_snacks", [])
     avoid_hint = [f"перекусы из блока {i+1}" for i in range(len(shown))] if shown else []
     await query.message.reply_text("Ищу другие варианты...")
     response = await _generate_snacks(avoid=avoid_hint if avoid_hint else None)
     shown.append(response)
     context.user_data["shown_snacks"] = shown
-    await query.message.reply_text(f"<b>Ещё варианты</b>\n\n{response}",
-                                   reply_markup=snack_more_keyboard(), parse_mode='HTML')
+    await query.message.reply_text(f"<b>Ещё варианты</b>\n\n{response}", parse_mode='HTML')
+    dishes = await extract_and_save_dishes(chat_id, response)
+    if dishes:
+        msg = await query.message.reply_text("Отметь что съел 👇", reply_markup=build_snack_keyboard(dishes, set()))
+        context.user_data[f"eat_dishes_{msg.message_id}"] = dishes
+        context.user_data[f"eat_eaten_{msg.message_id}"] = set()
+    else:
+        await query.message.reply_text("🔄", reply_markup=snack_more_keyboard())
 
 async def food_toggle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -432,9 +450,12 @@ async def food_confirm_callback(update: Update, context: ContextTypes.DEFAULT_TY
 async def _generate_snacks(avoid: list = None) -> str:
     avoid_part = f" Не повторяй: {', '.join(avoid)}." if avoid else ""
     return await ask_gemini(
-        f"3 перекуса для похудения при сидячей работе. До 5 мин готовки, высокий белок, до 200 ккал.{avoid_part}\n"
+        f"3 ПЕРЕКУСА (не полноценных блюда!) для похудения при сидячей работе.{avoid_part}\n"
+        "Требования: до 200 ккал, до 3-4 ингредиентов, готовность за 2-3 мин или без готовки.\n"
+        "Правильные примеры: творог с ягодами, яйца вкрутую, греческий йогурт с орехами, овощи с хумусом.\n"
+        "НЕЛЬЗЯ: курица с рисом, омлет с овощами и другие полноценные блюда.\n"
         "Для каждого: <b>название</b> (~ккал)\n• ингредиент — количество\n"
-        "<i>Почему подходит:</i> одно предложение.\nБез раздела 'Докупить'."
+        "<i>Почему подходит:</i> одно предложение."
     )
 
 async def snack_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -443,8 +464,15 @@ async def snack_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Подбираю перекусы...")
     response = await _generate_snacks()
     context.user_data["shown_snacks"] = [response]
-    await update.message.reply_text(f"<b>Идеи для перекуса</b>\n\n{response}",
-                                    reply_markup=snack_more_keyboard(), parse_mode='HTML')
+    chat_id = update.effective_chat.id
+    await update.message.reply_text(f"<b>Идеи для перекуса</b>\n\n{response}", parse_mode='HTML')
+    dishes = await extract_and_save_dishes(chat_id, response)
+    if dishes:
+        msg = await update.message.reply_text("Отметь что съел 👇", reply_markup=build_snack_keyboard(dishes, set()))
+        context.user_data[f"eat_dishes_{msg.message_id}"] = dishes
+        context.user_data[f"eat_eaten_{msg.message_id}"] = set()
+    else:
+        await update.message.reply_text("🔄", reply_markup=snack_more_keyboard())
 
 # --- Main handlers ---
 
