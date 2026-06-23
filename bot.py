@@ -174,7 +174,7 @@ def recognize_products_structured(text_products: list, image_list: list) -> Anal
 
 
 def format_ingredients_display(result: AnalysisResult) -> str:
-    lines = [f"• {p.name} — {p.amount}" for p in result.products]
+    lines = [f"• {p.name}" for p in result.products]
     return "\n".join(lines)
 
 
