@@ -5,11 +5,12 @@ from datetime import time as dtime, timezone, timedelta
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes,
 )
@@ -28,7 +29,6 @@ GEMINI_MODEL = "gemini-3.5-flash"
 FALLBACK_MODEL = "gemini-2.5-flash"
 FALLBACK_MODEL_2 = "gemini-2.0-flash"
 
-# Пользователи с активными напоминаниями о воде
 water_enabled: set[int] = set()
 
 MSK = timezone(timedelta(hours=3))
@@ -184,6 +184,12 @@ def meal_type_keyboard():
     ], resize_keyboard=True)
 
 
+def snack_more_keyboard():
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("🔄 Предложить ещё", callback_data="snack_more")
+    ]])
+
+
 # --- Water reminders ---
 
 async def water_reminder_job(context: ContextTypes.DEFAULT_TYPE):
@@ -216,6 +222,50 @@ async def toggle_water(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup=main_keyboard(),
             parse_mode='HTML',
         )
+
+
+# --- Snacks ---
+
+async def _generate_snacks(avoid: list[str] = None) -> str:
+    avoid_part = f" Не повторяй: {', '.join(avoid)}." if avoid else ""
+    return await ask_gemini(
+        f"3 перекуса для похудения при сидячей работе. До 5 мин готовки, высокий белок, до 200 ккал.{avoid_part}\n"
+        "Для каждого: <b>название</b> (~ккал)\n• ингредиент — количество\n<i>Почему подходит:</i> одно предложение.\n"
+        "Без раздела 'Докупить'."
+    )
+
+
+async def snack_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.pop("menu_state", None)
+    context.user_data.pop("shown_snacks", None)
+    await update.message.reply_text("Подбираю перекусы...")
+    response = await _generate_snacks()
+    context.user_data["shown_snacks"] = [response]
+    await update.message.reply_text(
+        f"<b>Идеи для перекуса</b>\n\n{response}",
+        reply_markup=snack_more_keyboard(),
+        parse_mode='HTML',
+    )
+
+
+async def snack_more_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    shown = context.user_data.get("shown_snacks", [])
+    # Собираем текст из предыдущих ответов как "avoid" подсказку
+    avoid_hint = [f"перекусы из блока {i+1}" for i in range(len(shown))] if shown else []
+
+    await query.message.reply_text("Ищу другие варианты...")
+    response = await _generate_snacks(avoid=avoid_hint if avoid_hint else None)
+    shown.append(response)
+    context.user_data["shown_snacks"] = shown
+
+    await query.message.reply_text(
+        f"<b>Ещё варианты</b>\n\n{response}",
+        reply_markup=snack_more_keyboard(),
+        parse_mode='HTML',
+    )
 
 
 # --- Handlers ---
@@ -279,19 +329,6 @@ async def lifehack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(
         f"<b>Лайфхак дня</b>\n\n{response}",
-        reply_markup=main_keyboard(), parse_mode='HTML',
-    )
-
-
-async def snack_ideas(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data.clear()
-    await update.message.reply_text("Подбираю перекусы...")
-    response = await ask_gemini(
-        "3 перекуса для похудения при сидячей работе. До 5 мин готовки, высокий белок, до 200 ккал. "
-        "Для каждого: <b>название</b> (~ккал), ингредиенты через •, почему подходит."
-    )
-    await update.message.reply_text(
-        f"<b>Идеи для перекуса</b>\n\n{response}",
         reply_markup=main_keyboard(), parse_mode='HTML',
     )
 
@@ -411,7 +448,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Main menu routing
     if user_text == "Меню из продуктов":
         await menu_start(update, context)
     elif user_text == "Совет на день":
@@ -435,7 +471,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def main():
     app = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    # Schedule water reminders
     for t, msg in WATER_SCHEDULE:
         app.job_queue.run_daily(water_reminder_job, time=t, data=msg)
 
@@ -445,6 +480,7 @@ def main():
     app.add_handler(CommandHandler("perekus", snack_ideas))
     app.add_handler(CommandHandler("profil", my_profile))
     app.add_handler(CommandHandler("voda", toggle_water))
+    app.add_handler(CallbackQueryHandler(snack_more_callback, pattern="^snack_more$"))
     app.add_handler(MessageHandler(filters.PHOTO, menu_got_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     logger.info("Bot started!")
