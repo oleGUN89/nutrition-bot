@@ -722,12 +722,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"Имеющиеся продукты (КБЖУ):\n{recognized}\n\n"
             f"Используй уместно, дополняй другими. В конце — что докупить.\n\n{meal_prompt}"
         )
+        # Сохраняем блюда в БД до ответа пользователю
+        await extract_and_save_dishes(chat_id, response)
         await update.message.reply_text(
             f"<b>{user_text}</b>\n\n{response}",
             reply_markup=main_keyboard(), parse_mode='HTML',
         )
-        # Сохраняем блюда в БД в фоне
-        asyncio.create_task(extract_and_save_dishes(chat_id, response))
         return
 
     # --- Main menu routing ---
