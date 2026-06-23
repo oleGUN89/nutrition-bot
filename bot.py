@@ -138,7 +138,7 @@ def recognize_products_structured(text_products: list, image_list: list) -> Anal
 
     try:
         parts = []
-        for img_bytes in image_list[:2]:
+        for img_bytes in image_list[:5]:
             parts.append(types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"))
 
         if image_list:
