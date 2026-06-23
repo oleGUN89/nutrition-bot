@@ -676,7 +676,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # --- Menu flow ---
     if menu_state == "waiting_products":
-        new_items = [line.strip() for line in user_text.splitlines() if line.strip()]
+        new_items = [item.strip() for line in user_text.splitlines() for item in line.split(',') if item.strip()]
         context.user_data.setdefault("text_products", []).extend(new_items)
         context.user_data.setdefault("image_bytes_list", [])
         await show_add_or_compose(update, context)
