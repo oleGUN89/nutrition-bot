@@ -429,8 +429,12 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         await update.message.reply_text(f"Составляю: {user_text.lower()}...")
         response = ask_gemini(
-            f"Продукты с КБЖУ:\n{recognized}\n\n"
-            f"Используй точные данные КБЖУ при расчёте калорийности блюд.\n\n{meal_prompt}"
+            f"Имеющиеся продукты (с КБЖУ):\n{recognized}\n\n"
+            f"Правила:\n"
+            f"- Используй имеющиеся продукты там, где они уместны — не обязательно все и не обязательно каждый в отдельное блюдо\n"
+            f"- Дополняй блюда другими ингредиентами для полноценного питания\n"
+            f"- В конце каждого варианта меню добавь список того, что нужно докупить\n"
+            f"- Используй точные данные КБЖУ для расчёта калорийности\n\n{meal_prompt}"
         )
         await update.message.reply_text(
             f"<b>{user_text}</b>\n\n{response}",
