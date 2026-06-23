@@ -1,4 +1,5 @@
 import asyncio
+import re
 import logging
 import os
 import random
@@ -122,41 +123,67 @@ async def register_user(chat_id: int):
         await conn.execute("INSERT INTO users (chat_id) VALUES ($1) ON CONFLICT DO NOTHING", chat_id)
 
 async def extract_and_save_dishes(chat_id: int, menu_text: str) -> list:
+    """Парсит блюда regex-ом из текста меню, сохраняет в БД."""
     if not DB_POOL:
         return []
-    schema = '{"dishes":[{"dish_name":"название","calories":0,"protein":0.0,"fat":0.0,"carbs":0.0}]}'
-    prompt = (f"Из меню ниже извлеки все блюда с примерным КБЖУ. "
-              f"Верни ТОЛЬКО валидный JSON без markdown:\n{schema}\n\nМеню:\n{menu_text}")
-    for model in [GEMINI_MODEL, FALLBACK_MODEL, FALLBACK_MODEL_2]:
-        try:
-            response = await client.aio.models.generate_content(model=model, contents=prompt)
-            text = response.text.strip()
-            if "```" in text:
-                text = text.split("```")[1].lstrip("json").strip()
-            data = json.loads(text)
-            dishes = data.get("dishes", [])
-            if not dishes:
-                continue
-            today = date.today()
-            saved = []
-            async with DB_POOL.acquire() as conn:
-                for d in dishes:
-                    row_id = await conn.fetchval(
-                        "INSERT INTO menu_dishes (chat_id, dish_name, calories, protein, fat, carbs, created_date) "
-                        "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
-                        chat_id, d.get("dish_name", ""), int(d.get("calories", 0)),
-                        float(d.get("protein", 0)), float(d.get("fat", 0)), float(d.get("carbs", 0)), today
-                    )
-                    saved.append({"id": row_id, "dish_name": d.get("dish_name", ""),
-                                  "calories": int(d.get("calories", 0)),
-                                  "protein": float(d.get("protein", 0)),
-                                  "fat": float(d.get("fat", 0)),
-                                  "carbs": float(d.get("carbs", 0))})
-            logger.info(f"Saved {len(saved)} dishes for {chat_id}")
-            return saved
-        except Exception as e:
-            logger.warning(f"extract_and_save_dishes ({model}): {e}")
-    return []
+    # Ищем паттерн: <b>Название</b> (~NNN ккал)
+    skip = {"Ингредиенты", "Приготовление", "Докупить"}
+    matches = re.findall(r'<b>([^<]+)</b>\s*\(~?(\d+)\s*ккал\)', menu_text)
+    dishes_raw = [
+        {"dish_name": name.strip().rstrip(":"), "calories": int(cal)}
+        for name, cal in matches
+        if name.strip().rstrip(":") not in skip and len(name.strip()) > 3
+    ]
+    if not dishes_raw:
+        logger.warning(f"extract_and_save_dishes: no dishes found via regex for {chat_id}")
+        return []
+    # Оцениваем белки/жиры/углеводы отдельным запросом
+    try:
+        names_str = ", ".join(d["dish_name"] for d in dishes_raw)
+        schema = '{"dishes":[{"dish_name":"название","protein":0.0,"fat":0.0,"carbs":0.0}]}'
+        prompt = f"Оцени белки/жиры/углеводы для блюд: {names_str}. Верни ТОЛЬКО JSON:\n{schema}"
+        for model in [GEMINI_MODEL, FALLBACK_MODEL, FALLBACK_MODEL_2]:
+            try:
+                resp = await client.aio.models.generate_content(model=model, contents=prompt)
+                text = resp.text.strip()
+                if "```" in text:
+                    parts = text.split("```")
+                    text = parts[1] if len(parts) > 1 else text
+                    if text.startswith("json"):
+                        text = text[4:]
+                kbzhu = {d["dish_name"]: d for d in json.loads(text.strip()).get("dishes", [])}
+                for d in dishes_raw:
+                    if d["dish_name"] in kbzhu:
+                        k = kbzhu[d["dish_name"]]
+                        d["protein"] = float(k.get("protein", 0))
+                        d["fat"] = float(k.get("fat", 0))
+                        d["carbs"] = float(k.get("carbs", 0))
+                break
+            except Exception as e:
+                logger.warning(f"KBZHU estimation ({model}): {e}")
+    except Exception as e:
+        logger.warning(f"KBZHU estimation error: {e}")
+    # Сохраняем в БД
+    today = date.today()
+    saved = []
+    try:
+        async with DB_POOL.acquire() as conn:
+            for d in dishes_raw:
+                row_id = await conn.fetchval(
+                    "INSERT INTO menu_dishes (chat_id, dish_name, calories, protein, fat, carbs, created_date) "
+                    "VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+                    chat_id, d["dish_name"], d.get("calories", 0),
+                    d.get("protein", 0.0), d.get("fat", 0.0), d.get("carbs", 0.0), today
+                )
+                saved.append({"id": row_id, "dish_name": d["dish_name"],
+                              "calories": d.get("calories", 0),
+                              "protein": d.get("protein", 0.0),
+                              "fat": d.get("fat", 0.0),
+                              "carbs": d.get("carbs", 0.0)})
+    except Exception as e:
+        logger.warning(f"DB save dishes failed: {e}")
+    logger.info(f"Saved {len(saved)} dishes for {chat_id}")
+    return saved
 
 async def get_today_dishes(chat_id: int) -> list:
     if not DB_POOL:
